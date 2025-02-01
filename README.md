@@ -1,6 +1,13 @@
 # Notion to Jira Migration via Python Script
 
-# Overview:
+# ChangeLog
+
+| Sr. No. | Section Title | Action Performed | Author | Date |
+| --- | --- | --- | --- | --- |
+| 1.  | Overview, Pre-Requisites, Execution, Limitations, Improvements | Create | Tirth Shah | 30-01-2025 |
+| 2. | Pre-Requisites, Improvements | Edit | Tirth Shah | 01-02-2025 |
+
+# Overview
 
 - The aim of this script is to migrate existing Epics data from Notion page (database) to Jira Project.
 - It claims to persist the hierarchy of the Epic Task and Child Tasks in Jira as well.
@@ -84,6 +91,31 @@ JIRA_PROJECT_KEY="DEMO"
 ```
 
 - Enter the path of your root directory (containing Epics and Items folders) in CLI parameter.
+- Maintain a `status.json` file in `<project_name>_src` folder. It maps the status in Notion to your desired status in Jira (Transition state). Generally the statuses in Jira are in lower case. Example `status.json` file is shown below:
+
+```json
+{
+    "idea": "backlog",
+    "ready for development": "ready for development",
+    "in testing (dev)": "in development",
+    "development in progress": "in development",
+    "in review": "in development",
+    "ready for testing (stage)": "ready for qa",
+    "in testing (prod)": "closed",
+    "closed": "closed",
+    "released on production": "closed"
+}
+```
+
+- Maintain a `users.json` file in `<project_name>_src` folder. It maps the user name from Notion to its registered email id in Jira (to obtain account id). Example of `users.json` file is shown below:
+
+```json
+{
+	"John Doe": "john@example.com",
+	"Tirth Shah": "tirth@example.com",
+	"Pratik Bhatt": "pratik@example.com"
+}
+```
 
 ---
 
@@ -109,10 +141,13 @@ Note the logs in terminal and logs folder latest file to debug if any error occu
     - Reporter
     - Priority
 
+> Note: The fields that are added while creating an issue must be **included in the Issue Create Screen** in Jira settings. (Ref.: [https://support.atlassian.com/jira-software-cloud/docs/configure-field-layout-in-the-issue-view/](https://support.atlassian.com/jira-software-cloud/docs/configure-field-layout-in-the-issue-view/))
+> 
+
 ---
 
 # Improvements
 
 - Extend support for following fields:
-    - Status of Issues using transition api
     - Inclusion of story points of tasks and sub-tasks
+    - Can improve the runtime of the script by applying multi-threading for updating transitions of issues.

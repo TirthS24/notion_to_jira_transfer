@@ -47,6 +47,21 @@ class HierarchicalDataParser:
         self.epics_dir = os.path.join(root_dir, "Epics")
         self.items_dir = os.path.join(root_dir, "Items")
         self.users_file = os.path.join(root_dir, "users.json")
+        self.status_file = os.path.join(root_dir, "status.json")
+
+    def process_user_email(self, name):
+        if not name or name == "":
+            return ""
+        with open(self.users_file, "r", encoding="utf-8") as file:
+            users = json.load(file)
+            return users.get(name, name)
+        
+    def process_task_status(self, status):
+        if not status or status == "":
+            status = "backlog"
+        with open(self.status_file, "r", encoding="utf-8") as file:
+            status_mapping = json.load(file)
+            return status_mapping.get(status)
 
     def process_child_tasks(self, text):
         cl_pattern = r'([^(]+)\s?\(([^)]+)\.md\)'
@@ -95,10 +110,12 @@ class HierarchicalDataParser:
             for row in reader:
                 task_name = row.get("Task name", "").strip()
                 task_id = row.get("ID", "").strip()
-                reported_by = row.get("Reported By", "").strip()
-                assignee = row.get("Assignee", "").strip()
+                reported_by = self.process_user_email(row.get("Reported By", "").strip())
+                assignee = self.process_user_email(row.get("Assignee", "").strip())
                 short_description = row.get("Short Description", "").strip()
+
                 status = row.get("Status", "").strip()
+                status = self.process_task_status(status.lower())
 
                 priority = row.get("Priority", "").strip()
                 priority_mapping = {
@@ -150,8 +167,8 @@ class HierarchicalDataParser:
                 epic_path = os.path.join(self.epics_dir, epic_file)
                 epic_summary = self.clean_filename(os.path.splitext(epic_file)[0])  # Clean filename
                 epic_content = self.read_markdown(epic_path)  # Read markdown content
-                epic_reporter = self.extract_reporter(epic_content)  # Extract Created by
-                epic_assignee = self.extract_assignee(epic_content)  # Extract Assignee
+                epic_reporter = self.process_user_email(self.extract_reporter(epic_content))  # Extract Created by
+                epic_assignee = self.process_user_email(self.extract_assignee(epic_content))  # Extract Assignee
                 logger.info(f"Epic {epic_summary} found from Notion Exports.")
                 # Create Epic dictionary
                 epic_data = {
@@ -259,7 +276,24 @@ class JiraIntegrator:
         )
         self.project_key = project_key
 
-    def find_jira_user(self, name: str) -> Optional[str]:
+    # Function to get transition ID from status name
+    def get_transition_id(self, issue_key, target_status):
+        transitions = self.jira.transitions(issue_key)
+        for transition in transitions:
+            if transition['to']['name'].lower() == target_status.lower():
+                return transition['id']
+        return None
+
+    # Function to change issue status using status name
+    def transition_issue(self, issue_key, target_status):
+        transition_id = self.get_transition_id(issue_key, target_status)
+        if transition_id:
+            self.jira.transition_issue(issue_key, transition_id)
+            print(f"Issue {issue_key} transitioned to {target_status}.")
+        else:
+            print(f"Error: No transition found for status '{target_status}'.")
+
+    def find_jira_user(self, email: str) -> Optional[str]:
         """
         Find Jira user by email
         Args:
@@ -268,10 +302,10 @@ class JiraIntegrator:
             Optional[str]: Jira username or None if not found
         """
         try:
-            if name:
+            if email:
                 # Use alternative search methods compliant with GDPR restrictions
                 user = self.jira.search_users(
-                    query=name,
+                    query=email,
                     maxResults=1
                 )
                 if user:
@@ -309,7 +343,7 @@ class JiraIntegrator:
             'issuetype': {'name': epic_data['type']},
         }
         # Add assignee and reporter if exists
-        self.add_users_fields(epic_issue_dict, epic_data, incl_assignee=True, incl_reporter=True)
+        self.add_users_fields(epic_issue_dict, epic_data, incl_assignee=True, incl_reporter=False)
         epic = self.jira.create_issue(**epic_issue_dict)
         logger.info(f"Epic `{epic_issue_dict['summary']}` Created in Jira with key {epic.key}")
         return epic.key
@@ -322,33 +356,36 @@ class JiraIntegrator:
                 'project': {'key': self.project_key},
                 'summary': task_data['summary'],
                 'description': task_data['description'] or 'Task created from Notion',
-                'issuetype': {'name': 'Task'},
+                'issuetype': {'name': task_data['type']},
                 'parent': {'key': epic_key}, # Epic Link field (might vary by Jira instance)
-                'priority': {'name': task_data['priority'] or 'Medium'}
+                # 'priority': {'name': task_data['priority'] or 'Medium'}
             }
-            self.add_users_fields(task_issue_dict, task_data, incl_assignee=True, incl_reporter=True)
+            self.add_users_fields(task_issue_dict, task_data, incl_assignee=True, incl_reporter=False)
             task = self.jira.create_issue(**task_issue_dict)
             logger.info(f"Task `{task_issue_dict['summary']}` Created in Jira with key {task.key}")
-            transitions = self.jira.transitions(task)
-            for t in transitions:
-                print(f"id: {t['id']}, name: {t['name']}")
+            self.transition_issue(task.key, task_data['status'])
+            logger.info(f"Task `{task_issue_dict['summary']}` status changed to `{task_data['status']}`")
+            # transitions = self.jira.transitions(task)
+            # for t in transitions:
+            #     print(f"id: {t['id']}, name: {t['name']}")
             # Create Subtasks
             for _, sub_data in task_data.get('child_items', {}).items():
                 if isinstance(sub_data, str):
                     continue
-                if task_data['type'].lower() == "task":
-                    sub_data['type'] = 'Subtask'
+                sub_data['type'] = 'Sub-task'
                 subtask_issue_dict = {
                     'project': {'key': self.project_key},
                     'summary': sub_data['summary'],
-                    'description': sub_data['description'] or 'Subtask created from Notion',
-                    'issuetype': {'name': 'Subtask'},
+                    'description': sub_data['description'] or 'Sub-task created from Notion',
+                    'issuetype': {'name': sub_data['type']},
                     'parent': {'key': task.key},
-                    'priority': {'name': sub_data['priority'] or 'Medium'}
+                    # 'priority': {'name': sub_data['priority'] or 'Medium'}
                 }
-                self.add_users_fields(subtask_issue_dict, sub_data, incl_assignee=True, incl_reporter=True)
+                self.add_users_fields(subtask_issue_dict, sub_data, incl_assignee=True, incl_reporter=False)
                 sub_task = self.jira.create_issue(**subtask_issue_dict)
                 logger.info(f"Sub Task `{subtask_issue_dict['summary']}` Created in Jira with key {sub_task.key}")
+                self.transition_issue(sub_task.key, sub_data['status'])
+                logger.info(f"Task `{subtask_issue_dict['summary']}` status changed to `{sub_data['status']}`")
 
 def main():
     parser = argparse.ArgumentParser(description="Process Notion data and upload to Jira.")
